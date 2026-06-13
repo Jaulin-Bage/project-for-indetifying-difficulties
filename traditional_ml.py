@@ -6,6 +6,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
+from sklearn.naive_bayes import GaussianNB
 from sklearn.tree import DecisionTreeClassifier
 
 import util
@@ -74,6 +75,8 @@ def make_model(model_name, random_state):
             random_state=random_state,
             n_jobs=-1,
         )
+    if model_name == "bayes":
+        return GaussianNB()
     raise ValueError(f"Unsupported model: {model_name}")
 
 
@@ -183,7 +186,7 @@ def parse_args():
     parser.add_argument("--output_dir", default="tmp", help="Directory for model outputs.")
     parser.add_argument(
         "--model",
-        choices=["tree", "forest"],
+        choices=["tree", "forest", "bayes"],
         default="tree",
         help="Traditional model to train.",
     )
