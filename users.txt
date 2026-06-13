@@ -1,0 +1,4 @@
+admin|admin123|admin
+1|1|admin
+user1|pass1|user
+user2|pass2|user

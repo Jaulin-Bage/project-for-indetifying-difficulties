@@ -1,0 +1,1 @@
+pyinstaller --name=my_app --noconfirm --clean --add-data "./data:./data" --add-data "./widgets:./widgets" --add-data "./users.txt:." --hidden-import "torch" --hidden-import "matplotlib.backends.backend_qt5agg"  --exclude-module "torchvision" --exclude-module "torchaudio" --strip --upx-dir "D:\\Envs\\upx-5.0.1-win64" main.py
