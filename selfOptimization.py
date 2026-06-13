@@ -536,17 +536,17 @@ def self_optimization(full_df_std,
     """ 自优化算法主函数 """
 
     # 超参数
-    # model = Net_GRU()
-    model = Net()
+    model = Net_GRU()
+    # model = Net()
     model.to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    # scheduler = optim.lr_scheduler.CosineAnnealingLR(
-    #     optimizer,
-    #     T_max=epochs,
-    #     eta_min=lr,
-    # )
-    scheduler = None
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=epochs,
+        eta_min=lr,
+    )
+    # scheduler = None
     # 初始化权重
     init_weights = get_init_weights(A_II, A_I, A_II_labels)
     A_II_weights = torch.tensor(init_weights, dtype=torch.float32).to(device)
