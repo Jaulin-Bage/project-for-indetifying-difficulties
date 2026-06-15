@@ -2,19 +2,32 @@ import argparse
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-from sklearn.model_selection import train_test_split
+from sklearn.ensemble import (
+    ExtraTreesClassifier,
+    GradientBoostingClassifier,
+    RandomForestClassifier,
+)
+from sklearn.inspection import permutation_importance
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, confusion_matrix
 from sklearn.naive_bayes import GaussianNB
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import LinearSVC
 from sklearn.tree import DecisionTreeClassifier
 
 import util
 from params import RESULT_VECTOR_MAPPING
 from selfOptimization import encode
 
-
 LABEL_COLUMN = "实际认定结果"
+DEFAULT_TRAIN_DATASET = Path("true_data") / "三所学校一致数据_基于三个指标体系.csv"
+DEFAULT_TEST_DATASET = Path("true_data") / "total_20260613.csv"
+DEFAULT_MIN_IMPORTANCE_PERCENT = 2.0
+DEFAULT_PRIOR_STRENGTH = 0.3
 
 
 def build_feature_frame(dataset_path, indicator_path):
@@ -75,18 +88,162 @@ def make_model(model_name, random_state):
             random_state=random_state,
             n_jobs=-1,
         )
+    if model_name == "extra_trees":
+        return ExtraTreesClassifier(
+            n_estimators=400,
+            max_depth=None,
+            min_samples_leaf=2,
+            class_weight="balanced",
+            random_state=random_state,
+            n_jobs=-1,
+        )
+    if model_name == "logistic":
+        return Pipeline([
+            ("scaler", StandardScaler()),
+            ("classifier", LogisticRegression(
+                C=0.5,
+                class_weight="balanced",
+                max_iter=5000,
+                random_state=random_state,
+            )),
+        ])
+    if model_name == "linear_svm":
+        return Pipeline([
+            ("scaler", StandardScaler()),
+            ("classifier", LinearSVC(
+                C=0.5,
+                class_weight="balanced",
+                dual=False,
+                max_iter=5000,
+                random_state=random_state,
+            )),
+        ])
+    if model_name == "knn":
+        return Pipeline([
+            ("scaler", StandardScaler()),
+            ("classifier", KNeighborsClassifier(
+                n_neighbors=7,
+                weights="distance",
+            )),
+        ])
+    if model_name == "gradient_boosting":
+        return GradientBoostingClassifier(
+            n_estimators=200,
+            learning_rate=0.05,
+            max_depth=3,
+            min_samples_leaf=3,
+            random_state=random_state,
+        )
     if model_name == "bayes":
         return GaussianNB()
     raise ValueError(f"Unsupported model: {model_name}")
 
 
-def save_feature_importance(model, feature_names, output_dir, model_name):
-    if not hasattr(model, "feature_importances_"):
-        return None
+def normalize_importances(importances, feature_count):
+    importances = np.maximum(np.asarray(importances, dtype=float), 0)
+    total = float(np.sum(importances))
+    if total <= 0:
+        return np.ones(feature_count, dtype=float) / feature_count
+    return importances / total
+
+
+def load_prior_importances(indicator_path, feature_names):
+    indicator_df = pd.read_csv(indicator_path)
+    if "indicator_2" not in indicator_df.columns or "score_max" not in indicator_df.columns:
+        return np.ones(len(feature_names), dtype=float) / len(feature_names)
+
+    prior_map = (
+        indicator_df.dropna(subset=["indicator_2"])
+        .drop_duplicates("indicator_2", keep="first")
+        .set_index("indicator_2")["score_max"]
+        .to_dict()
+    )
+    prior = np.array(
+        [pd.to_numeric(prior_map.get(name, 0), errors="coerce") for name in feature_names],
+        dtype=float,
+    )
+    prior = np.nan_to_num(prior, nan=0.0, posinf=0.0, neginf=0.0)
+    return normalize_importances(prior, len(feature_names))
+
+
+def apply_importance_constraints(
+    importances,
+    feature_names,
+    indicator_path,
+    min_importance_percent=DEFAULT_MIN_IMPORTANCE_PERCENT,
+    prior_strength=DEFAULT_PRIOR_STRENGTH,
+):
+    model_weights = normalize_importances(importances, len(feature_names))
+
+    prior_strength = min(max(float(prior_strength), 0.0), 1.0)
+    if prior_strength > 0:
+        prior_weights = load_prior_importances(indicator_path, feature_names)
+        constrained = (1.0 - prior_strength) * model_weights + prior_strength * prior_weights
+    else:
+        constrained = model_weights
+
+    min_weight = max(float(min_importance_percent), 0.0) / 100.0
+    if min_weight * len(feature_names) >= 1.0:
+        raise ValueError("单项最低权重过大，指标数量较多时所有最低权重之和不能达到或超过 100%。")
+
+    constrained = normalize_importances(constrained, len(feature_names))
+    remaining_weight = 1.0 - min_weight * len(feature_names)
+    return min_weight + remaining_weight * constrained
+
+
+def get_model_importances(model):
+    estimator = model
+    if isinstance(model, Pipeline):
+        estimator = model.named_steps.get("classifier", model.steps[-1][1])
+
+    if hasattr(estimator, "feature_importances_"):
+        return estimator.feature_importances_
+
+    if hasattr(estimator, "coef_"):
+        coefficients = np.asarray(estimator.coef_, dtype=float)
+        if coefficients.ndim == 1:
+            return np.abs(coefficients)
+        return np.mean(np.abs(coefficients), axis=0)
+
+    return None
+
+
+def save_feature_importance(
+    model,
+    feature_names,
+    output_dir,
+    model_name,
+    x_test,
+    y_test,
+    random_state,
+    indicator_path,
+    min_importance_percent=DEFAULT_MIN_IMPORTANCE_PERCENT,
+    prior_strength=DEFAULT_PRIOR_STRENGTH,
+):
+    importances = get_model_importances(model)
+    if importances is None:
+        result = permutation_importance(
+            model,
+            x_test,
+            y_test,
+            n_repeats=10,
+            random_state=random_state,
+            scoring="accuracy",
+            n_jobs=-1,
+        )
+        importances = np.maximum(result.importances_mean, 0)
+
+    importances = apply_importance_constraints(
+        importances,
+        feature_names,
+        indicator_path,
+        min_importance_percent=min_importance_percent,
+        prior_strength=prior_strength,
+    )
 
     importance_df = pd.DataFrame({
         "indicator": feature_names,
-        "importance": model.feature_importances_,
+        "importance": importances * 100,
     }).sort_values("importance", ascending=False)
 
     output_path = output_dir / f"traditional_{model_name}_feature_importance.csv"
@@ -94,33 +251,48 @@ def save_feature_importance(model, feature_names, output_dir, model_name):
     return output_path
 
 
+def generate_indicator_system(indicator_path, importance_path, output_path):
+    indicator_df = pd.read_csv(indicator_path)
+    importance_df = pd.read_csv(importance_path)
+    weight_map = importance_df.set_index("indicator")["importance"].to_dict()
+
+    output_df = indicator_df.copy()
+    output_df["score_max"] = output_df["indicator_2"].map(weight_map).fillna(
+        output_df["score_max"]
+    )
+    output_df["score"] = output_df["normalized_score"] * output_df["score_max"]
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+    return output_path, output_df
+
+
 def train_traditional_model(
     dataset_path,
     indicator_path,
     output_dir,
-    test_dataset_path=None,
-    model_name="tree",
-    test_size=0.2,
+    test_dataset_path=DEFAULT_TEST_DATASET,
+    model_name="forest",
     random_state=2024,
+    new_indicator_path=None,
+    min_importance_percent=DEFAULT_MIN_IMPORTANCE_PERCENT,
+    prior_strength=DEFAULT_PRIOR_STRENGTH,
 ):
+    dataset_path = Path(dataset_path)
+    indicator_path = Path(indicator_path)
+    output_dir = Path(output_dir)
+    test_dataset_path = Path(test_dataset_path)
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     x, y, feature_names = build_feature_frame(dataset_path, indicator_path)
-    if test_dataset_path is None:
-        stratify = y if y.nunique() > 1 else None
-        x_train, x_test, y_train, y_test = train_test_split(
-            x,
-            y,
-            test_size=test_size,
-            random_state=random_state,
-            stratify=stratify,
-        )
-    else:
-        x_train, y_train = x, y
-        x_test, y_test, _ = build_feature_frame(test_dataset_path, indicator_path)
-        x_test = x_test.reindex(columns=feature_names, fill_value=0)
+    x_train, y_train = x, y
+    x_test, y_test, _ = build_feature_frame(test_dataset_path, indicator_path)
+    x_test = x_test.reindex(columns=feature_names, fill_value=0)
 
     model = make_model(model_name, random_state)
+    if model_name == "knn":
+        model.set_params(classifier__n_neighbors=max(1, min(7, len(x_train))))
     model.fit(x_train, y_train)
 
     train_pred = model.predict(x_train)
@@ -128,12 +300,28 @@ def train_traditional_model(
 
     train_acc = accuracy_score(y_train, train_pred)
     test_acc = accuracy_score(y_test, test_pred)
-    report = classification_report(y_test, test_pred, digits=4, zero_division=0)
-    matrix = confusion_matrix(y_test, test_pred)
+    class_labels = sorted(set(y_train) | set(y_test) | set(test_pred))
+    matrix = confusion_matrix(y_test, test_pred, labels=class_labels)
 
     model_path = output_dir / f"traditional_{model_name}.joblib"
     joblib.dump(model, model_path)
-    importance_path = save_feature_importance(model, feature_names, output_dir, model_name)
+    importance_path = save_feature_importance(
+        model,
+        feature_names,
+        output_dir,
+        model_name,
+        x_test,
+        y_test,
+        random_state,
+        indicator_path,
+        min_importance_percent=min_importance_percent,
+        prior_strength=prior_strength,
+    )
+    if new_indicator_path is None:
+        new_indicator_path = output_dir / f"traditional_{model_name}_indicator_system.csv"
+    new_indicator_path, new_indicator_df = generate_indicator_system(
+        indicator_path, importance_path, new_indicator_path
+    )
 
     report_path = output_dir / f"traditional_{model_name}_report.txt"
     report_path.write_text(
@@ -142,9 +330,8 @@ def train_traditional_model(
             f"Train samples: {len(x_train)}, test samples: {len(x_test)}",
             f"Train accuracy: {train_acc:.4f}",
             f"Test accuracy: {test_acc:.4f}",
-            "",
-            "Classification report:",
-            report,
+            f"Minimum importance percent: {min_importance_percent:.4f}",
+            f"Prior strength: {prior_strength:.4f}",
         ]),
         encoding="utf-8",
     )
@@ -156,8 +343,6 @@ def train_traditional_model(
     print(f"Train samples: {len(x_train)}, test samples: {len(x_test)}")
     print(f"Train accuracy: {train_acc:.4f}")
     print(f"Test accuracy: {test_acc:.4f}")
-    print("\nClassification report:")
-    print(report)
     print("Confusion matrix:")
     print(matrix)
     print(f"\nSaved model: {model_path}")
@@ -170,28 +355,63 @@ def train_traditional_model(
         "model": model,
         "train_accuracy": train_acc,
         "test_accuracy": test_acc,
+        "train_samples": len(x_train),
+        "test_samples": len(x_test),
+        "confusion_matrix": matrix,
+        "class_labels": class_labels,
+        "feature_names": feature_names,
         "model_path": model_path,
         "report_path": report_path,
         "matrix_path": matrix_path,
         "importance_path": importance_path,
+        "new_indicator_path": new_indicator_path,
+        "new_indicator_df": new_indicator_df,
     }
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a traditional ML baseline.")
-    parser.add_argument("--dataset", help="CSV dataset with actual labels.")
+    parser.add_argument(
+        "--dataset",
+        default=DEFAULT_TRAIN_DATASET,
+        help="CSV training dataset with actual labels.",
+    )
     parser.add_argument("--train_dataset", help="CSV training dataset with actual labels.")
-    parser.add_argument("--test_dataset", help="CSV testing dataset with actual labels.")
+    parser.add_argument(
+        "--test_dataset",
+        default=DEFAULT_TEST_DATASET,
+        help="CSV testing dataset with actual labels.",
+    )
     parser.add_argument("--old_zbtx_file", required=True, help="Indicator system CSV.")
     parser.add_argument("--output_dir", default="tmp", help="Directory for model outputs.")
     parser.add_argument(
         "--model",
-        choices=["tree", "forest", "bayes"],
-        default="tree",
+        choices=[
+            "tree",
+            "forest",
+            "extra_trees",
+            "logistic",
+            "linear_svm",
+            "knn",
+            "gradient_boosting",
+            "bayes",
+        ],
+        default="forest",
         help="Traditional model to train.",
     )
-    parser.add_argument("--test_size", type=float, default=0.2)
     parser.add_argument("--random_state", type=int, default=2024)
+    parser.add_argument(
+        "--min_importance_percent",
+        type=float,
+        default=DEFAULT_MIN_IMPORTANCE_PERCENT,
+        help="Minimum percent reserved for every indicator after training.",
+    )
+    parser.add_argument(
+        "--prior_strength",
+        type=float,
+        default=DEFAULT_PRIOR_STRENGTH,
+        help="Blend ratio for the original indicator score_max prior, from 0 to 1.",
+    )
     return parser.parse_args()
 
 
@@ -207,6 +427,7 @@ if __name__ == "__main__":
         output_dir=Path(args.output_dir),
         test_dataset_path=args.test_dataset,
         model_name=args.model,
-        test_size=args.test_size,
         random_state=args.random_state,
+        min_importance_percent=args.min_importance_percent,
+        prior_strength=args.prior_strength,
     )

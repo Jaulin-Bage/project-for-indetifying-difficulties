@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import QDialog
 from widgets.page1_widget import Page1Widget
 from widgets.page2_widget import Page2Widget
 from widgets.page3_widget import Page3Widget
+from widgets.page4_widget import Page4Widget
 
 from login_window import LoginWindow
 
@@ -23,6 +24,7 @@ class IntegratedMainWindow(QMainWindow):
         self.tabs.addTab(Page2Widget(), "② 算法运行")
         if role == 'admin':
             self.tabs.addTab(Page3Widget(), "③ 指标体系优化")
+            self.tabs.addTab(Page4Widget(), "④ 传统机器学习")
 
         self.tabs.tabBar().setElideMode(Qt.ElideNone)
         self.setStyleSheet(self._get_stylesheet())

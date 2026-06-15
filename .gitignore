@@ -6,4 +6,5 @@ tmp/*
 results/*
 true_data/*
 widgets/*
+!widgets/page4_widget.py
 output/*
