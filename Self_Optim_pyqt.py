@@ -224,6 +224,7 @@ class MainWindow(QMainWindow):
         # 线程池管理（使用全局线程池）
         self.thread_pool = QThreadPool.globalInstance()
         self.current_worker = None  # 当前运行的 worker
+        self.optimized_df = None
         self.color_mapping = {}  # 存储颜色映射
         print(f"多线程配置: 最大线程数 = {self.thread_pool.maxThreadCount()}")
 
@@ -303,9 +304,14 @@ class MainWindow(QMainWindow):
         self.save_button.clicked.connect(self.save_results)
         self.save_button.setEnabled(False)
 
+        self.export_indicator_button = QPushButton("导出指标体系")
+        self.export_indicator_button.clicked.connect(self.export_indicator_csv)
+        self.export_indicator_button.setEnabled(False)
+
         button_layout.addWidget(self.run_button)
         button_layout.addWidget(self.stop_button)
         button_layout.addWidget(self.save_button)
+        button_layout.addWidget(self.export_indicator_button)
         left_layout.addLayout(button_layout)
 
         # 添加左侧控制区到主布局
@@ -570,7 +576,10 @@ class MainWindow(QMainWindow):
             # 1. 保存优化后的指标体系CSV
             if hasattr(self, 'optimized_df') and self.optimized_df is not None:
                 save_path = os.path.join(dir_path, "optimized_indicators.csv")
-                self.optimized_df.to_csv(save_path, index=False, encoding='utf-8-sig')
+                indicator_df = self.build_optimized_indicator_system()
+                indicator_df.to_csv(save_path, index=False, encoding='utf-8-sig')
+                summary_path = os.path.join(dir_path, "optimized_weight_summary.csv")
+                self.optimized_df.to_csv(summary_path, index=False, encoding='utf-8-sig')
             
             # 2. 保存四张图表（使用存储的高分辨率原始数据）
             images_to_save = {
@@ -600,6 +609,80 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
 
+    def export_indicator_csv(self):
+        """直接导出优化后的指标体系CSV。"""
+        if self.optimized_df is None or self.optimized_df.empty:
+            QMessageBox.warning(self, "提示", "请先完成指标体系优化。")
+            return
+
+        source_path = self.params.get('old_zbtx_file') or "optimized_indicators.csv"
+        source_dir = os.path.dirname(source_path)
+        source_stem = os.path.splitext(os.path.basename(source_path))[0]
+        default_name = os.path.join(source_dir, f"{source_stem}_自优化指标体系.csv")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出指标体系", default_name, "CSV Files (*.csv)")
+        if not path:
+            return
+        if not path.lower().endswith(".csv"):
+            path += ".csv"
+
+        try:
+            indicator_df = self.build_optimized_indicator_system()
+            indicator_df.to_csv(path, index=False, encoding='utf-8-sig')
+            self.statusBar().showMessage(f"指标体系CSV已导出: {path}")
+            QMessageBox.information(self, "导出成功", f"指标体系CSV已导出至:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
+    def build_optimized_indicator_system(self):
+        """生成与第四页一致的完整指标体系CSV结构。"""
+        if self.optimized_df is None or self.optimized_df.empty:
+            raise ValueError("请先完成指标体系优化。")
+
+        old_zbtx_file = self.params.get('old_zbtx_file')
+        if not old_zbtx_file or not os.path.exists(old_zbtx_file):
+            raise ValueError("原始指标体系文件不存在，请重新选择。")
+
+        indicator_df = pd.read_csv(old_zbtx_file)
+        required_cols = {"indicator_2", "score_max", "normalized_score"}
+        missing_cols = required_cols - set(indicator_df.columns)
+        if missing_cols:
+            raise ValueError(f"原始指标体系缺少列: {', '.join(sorted(missing_cols))}")
+
+        name_col = self.find_result_column(["指标名称", "指标", "名称"], default_index=0)
+        weight_col = self.find_result_column(["优化后权重"], default_index=None)
+        if weight_col is None:
+            raise ValueError("优化结果中缺少“优化后权重”列。")
+
+        weight_df = self.optimized_df[[name_col, weight_col]].dropna(subset=[name_col])
+        weight_map = (
+            weight_df.assign(**{
+                name_col: weight_df[name_col].astype(str).str.strip(),
+                weight_col: pd.to_numeric(weight_df[weight_col], errors='coerce') * 100,
+            })
+            .dropna(subset=[weight_col])
+            .set_index(name_col)[weight_col]
+            .to_dict()
+        )
+
+        output_df = indicator_df.copy()
+        indicator_names = output_df["indicator_2"].astype(str).str.strip()
+        output_df["score_max"] = indicator_names.map(weight_map).fillna(output_df["score_max"])
+        output_df["score"] = pd.to_numeric(output_df["normalized_score"], errors='coerce') * pd.to_numeric(
+            output_df["score_max"], errors='coerce')
+        return output_df
+
+    def find_result_column(self, substrings, default_index=None):
+        """按列名关键词查找优化结果表字段。"""
+        for col in self.optimized_df.columns:
+            col_text = str(col)
+            if any(text in col_text for text in substrings):
+                return col
+        if default_index is not None and len(self.optimized_df.columns) > default_index:
+            return self.optimized_df.columns[default_index]
+        return None
+
     def start_training(self):
         """开始训练按钮点击事件"""
         # 更新参数
@@ -622,7 +705,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.loss_label.setText("当前损失: -")
         self.acc_label.setText("当前一致率: -")
-        # self.save_button.setEnabled(False)
+        self.optimized_df = None
+        self.save_button.setEnabled(False)
+        self.export_indicator_button.setEnabled(False)
         self.statusBar().showMessage("训练中...")
 
         # 清空表格
@@ -703,14 +788,16 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(100)
         self.run_button.setEnabled(True)
         self.stop_button.setEnabled(False)
-        self.save_button.setEnabled(True)
         self.statusBar().showMessage(message)
         
         # 保存优化后的DataFrame供后续使用
         self.optimized_df = optimized_df
+        has_result = self.optimized_df is not None and not self.optimized_df.empty
+        self.save_button.setEnabled(has_result)
+        self.export_indicator_button.setEnabled(has_result)
 
         # 加载优化结果到表格
-        if self.optimized_df is not None:
+        if has_result:
             self.load_results_to_table(self.optimized_df)
 
         # 保存训练指标

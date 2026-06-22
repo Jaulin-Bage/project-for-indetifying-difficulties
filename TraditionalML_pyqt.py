@@ -36,12 +36,12 @@ from traditional_ml import (
 
 MODEL_NAMES = {
     "随机森林": "forest",
-    "极端随机树": "extra_trees",
+    #"极端随机树": "extra_trees",
     "逻辑回归": "logistic",
-    "线性SVM": "linear_svm",
-    "K近邻": "knn",
-    "梯度提升树": "gradient_boosting",
-    "决策树": "tree",
+    #"线性SVM": "linear_svm",
+    #"K近邻": "knn",
+    #"梯度提升树": "gradient_boosting",
+    #"决策树": "tree",
     "高斯朴素贝叶斯": "bayes",
 }
 
@@ -98,8 +98,8 @@ class TraditionalMLWindow(QMainWindow):
         model_form = QFormLayout(model_group)
         self.model_combo = QComboBox()
         self.model_combo.addItems(MODEL_NAMES.keys())
-        self.min_importance_edit = QLineEdit("2.0")
-        self.prior_strength_edit = QLineEdit("0.30")
+        self.min_importance_edit = QLineEdit("0.0")
+        self.prior_strength_edit = QLineEdit("0.0")
         model_form.addRow("训练模型", self.model_combo)
         model_form.addRow("单项最低权重(%)", self.min_importance_edit)
         model_form.addRow("原权重保留比例", self.prior_strength_edit)
