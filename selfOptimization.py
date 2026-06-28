@@ -536,7 +536,7 @@ def self_optimization(full_df_std,
     """ 自优化算法主函数 """
 
     # 超参数
-    model = Net_GRU()
+    model = Net()
     # model = Net()
     model.to(device)
     criterion = nn.CrossEntropyLoss()
