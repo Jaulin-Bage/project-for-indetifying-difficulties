@@ -59,7 +59,7 @@ class SortableTableWidgetItem(QTableWidgetItem):
 # 工作线程信号类（因为 QRunnable 不能直接发送信号）
 class WorkerSignals(QObject):
     """定义工作线程可以发出的信号"""
-    update_progress = pyqtSignal(int, float, float, float, float, float, dict, object, object, object, object, dict)
+    update_progress = pyqtSignal(int, float, float, float, float, float, float, dict, object, object, object, object, dict)
     training_complete = pyqtSignal(object, str, list, list, list)
     error = pyqtSignal(str)
     finished = pyqtSignal()
@@ -123,7 +123,7 @@ class AlgorithmRunner(QRunnable):
             real_data = [df, real_labels]
 
             # 自定义训练回调函数
-            def training_callback(epoch, loss, train_acc, test_acc, AII_acc, FCEAII_acc, weights,
+            def training_callback(epoch, loss, train_acc, test_acc, recall, AII_acc, FCEAII_acc, weights,
                                   loss_img, acc_img, acc_aii_fce_img, weight_img, color_mapping):
                 if not self.running:
                     return False  # 停止训练
@@ -142,6 +142,7 @@ class AlgorithmRunner(QRunnable):
                                 loss,
                                 train_acc,
                                 test_acc,
+                                recall,
                                 AII_acc,
                                 FCEAII_acc,
                                 weights,
@@ -174,6 +175,7 @@ class AlgorithmRunner(QRunnable):
                 A_II,
                 A_II_labels,
                 self.params['device'],
+                recall_weight=self.params['recall_weight'],
                 callback=training_callback,  # 添加回调函数
                 work_dir=self.params['new_zbtx_path'],
             )
@@ -217,6 +219,7 @@ class MainWindow(QMainWindow):
             'batch_size': 256,
             'alpha': 0.4,
             'beta': 0.,
+            'recall_weight': 0.3,
             'device': 'cpu',  # 默认使用CPU
             # 'device': 'cuda:0'
         }
@@ -259,12 +262,15 @@ class MainWindow(QMainWindow):
         self.loss_label.setStyleSheet("font-size: 18px; font-family: 'Microsoft YaHei';")
         self.acc_label = QLabel("训练/测试一致率: -")
         self.acc_label.setStyleSheet("font-size: 18px; font-family: 'Microsoft YaHei';")
+        self.recall_label = QLabel("宏平均召回率: -")
+        self.recall_label.setStyleSheet("font-size: 18px; font-family: 'Microsoft YaHei';")
         self.aii_label = QLabel("AII/FCEAII一致率: -")
         self.aii_label.setStyleSheet("font-size: 18px; font-family: 'Microsoft YaHei';")
 
         progress_layout.addWidget(self.progress_bar)
         progress_layout.addWidget(self.loss_label)
         progress_layout.addWidget(self.acc_label)
+        progress_layout.addWidget(self.recall_label)
         progress_layout.addWidget(self.aii_label)
         
         left_layout.addWidget(progress_group)
@@ -511,12 +517,12 @@ class MainWindow(QMainWindow):
         # 高级参数标签
         advanced_labels = [
             "学习率(lr):", "训练轮数(epochs):", "批次大小(batch_size):", "AII权重(alpha):",
-            "FCE权重(beta):", "训练设备(device):"
+            "FCE权重(beta):", "召回率损失权重:", "训练设备(device):"
         ]
 
         # 高级参数对应的键
         advanced_keys = [
-            'lr', 'epochs', 'batch_size', 'alpha', 'beta', 'device'
+            'lr', 'epochs', 'batch_size', 'alpha', 'beta', 'recall_weight', 'device'
         ]
         self.param_edits = {}
 
@@ -701,10 +707,21 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, "输入错误", f"参数 {key} 输入无效，请检查！")
                     return
 
+        if not 0 <= self.params['recall_weight'] <= 1:
+            QMessageBox.warning(self, "输入错误", "召回率损失权重必须在 0 和 1 之间！")
+            return
+        if (self.params['alpha'] < 0 or self.params['beta'] < 0
+                or self.params['alpha'] + self.params['beta'] > 1):
+            QMessageBox.warning(
+                self, "输入错误", "AII权重和FCE权重必须非负，并且两者之和不能超过 1！"
+            )
+            return
+
         # 重置UI状态
         self.progress_bar.setValue(0)
         self.loss_label.setText("当前损失: -")
         self.acc_label.setText("当前一致率: -")
+        self.recall_label.setText("宏平均召回率: -")
         self.optimized_df = None
         self.save_button.setEnabled(False)
         self.export_indicator_button.setEnabled(False)
@@ -743,7 +760,7 @@ class MainWindow(QMainWindow):
             # 不需要像 QThread 那样调用 wait()
 
     def update_training_progress(self, epoch, loss, train_acc, test_acc,
-                                 AII_acc, FCEAII_acc, weights,
+                                 recall, AII_acc, FCEAII_acc, weights,
                                  loss_img_data, acc_img_data, aii_fceaii_img_data, weight_img_data, color_mapping):
         """更新训练进度"""
         total_epochs = self.params['epochs']
@@ -756,6 +773,8 @@ class MainWindow(QMainWindow):
         self.loss_label.setText(f"当前损失: {loss:.4f}")
         self.acc_label.setText(
             f"模型一致率: {train_acc:.2%}")
+        self.recall_label.setText(
+            f"宏平均召回率: {recall:.2%}")
         self.aii_label.setText(
             f"AII一致率: {AII_acc:.2%} | FCEAII一致率: {FCEAII_acc:.2%}")
 

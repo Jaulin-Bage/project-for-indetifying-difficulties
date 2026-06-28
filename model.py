@@ -29,28 +29,25 @@ class Net(nn.Module):
         self.fc1 = CustomLinear(16, 1)  # 输出维度改为1，直接得到加权后的综合得分
         
         # 后续层用于分类
-        self.fc2 = nn.Linear(1, 64)
-        self.bn2 = nn.BatchNorm1d(64)
-        self.dropout2 = nn.Dropout(0.2)
+        self.fc2 = nn.Linear(1, 16)
+        self.bn2 = nn.BatchNorm1d(16)
         
-        self.fc3 = nn.Linear(64, 128)
-        self.bn3 = nn.BatchNorm1d(128)
-        self.dropout3 = nn.Dropout(0.2)
+        self.fc3 = nn.Linear(16, 32)
+        self.bn3 = nn.BatchNorm1d(32)
         
-        self.fc4 = nn.Linear(128, 64)
-        self.bn4 = nn.BatchNorm1d(64)
-        self.dropout4 = nn.Dropout(0.2)
+        self.fc4 = nn.Linear(32, 16)
+        self.bn4 = nn.BatchNorm1d(16)
         
-        self.fc5 = nn.Linear(64, 4)  # 输出4个类别
+        self.fc5 = nn.Linear(16, 4)  # 输出4个类别
 
     def forward(self, x):
         # 第一层：通过CustomLinear得到加权综合得分
         x = self.fc1(x)  # (batch_size, 1)
         
         # 后续层进行非线性变换和分类
-        x = self.dropout2(F.relu(self.bn2(self.fc2(x))))
-        x = self.dropout3(F.relu(self.bn3(self.fc3(x))))
-        x = self.dropout4(F.relu(self.bn4(self.fc4(x))))
+        x = F.relu(self.bn2(self.fc2(x)))
+        x = F.relu(self.bn3(self.fc3(x)))
+        x = F.relu(self.bn4(self.fc4(x)))
         x = self.fc5(x)
         return x
     

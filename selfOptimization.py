@@ -307,14 +307,46 @@ def get_labels_by_FCEAII(full_df_std, weights, indices, zbtx_file):
     return labels
 
 
+def soft_macro_recall_loss(model_outputs, true_labels, eps=1e-8):
+    """可反向传播的宏平均召回率损失。"""
+    probabilities = torch.softmax(model_outputs, dim=1)
+    one_hot_labels = torch.nn.functional.one_hot(
+        true_labels, num_classes=model_outputs.shape[1]
+    ).to(dtype=probabilities.dtype)
+    true_positives = (probabilities * one_hot_labels).sum(dim=0)
+    actual_positives = one_hot_labels.sum(dim=0)
+    present_classes = actual_positives > 0
+    recalls = true_positives[present_classes] / (
+        actual_positives[present_classes] + eps
+    )
+    return 1.0 - recalls.mean()
+
+
+def macro_recall_score(predicted, true_labels, num_classes):
+    """计算实际预测结果的宏平均召回率。"""
+    recalls = []
+    for class_id in range(num_classes):
+        class_mask = true_labels == class_id
+        actual_count = class_mask.sum().item()
+        if actual_count > 0:
+            true_positive = ((predicted == class_id) & class_mask).sum().item()
+            recalls.append(true_positive / actual_count)
+    return float(np.mean(recalls)) if recalls else 0.0
+
+
 def combined_loss2(criterion, model_outputs, true_labels, indices, full_df_std,
-                   weights, old_zbtx_file, alpha, beta, A_II_labels, A_I,
-                   A_II):
+                   weights, old_zbtx_file, alpha, beta, recall_weight,
+                   A_II_labels, A_I, A_II):
     """ 计算组合损失函数 """
     # 计算模型输出的交叉熵损失
     ce_loss = criterion(
         model_outputs,
         true_labels,
+    )
+    recall_loss = soft_macro_recall_loss(model_outputs, true_labels)
+    supervised_loss = (
+        (1 - recall_weight) * ce_loss
+        + recall_weight * recall_loss
     )
 
     # 计算直接用权重加权求和得到的标签
@@ -340,8 +372,11 @@ def combined_loss2(criterion, model_outputs, true_labels, indices, full_df_std,
         FCEAII_loss = criterion(model_outputs, FCEAII_labels)
 
     # 计算总损失
-    total_loss = (1 - alpha -
-                  beta) * ce_loss + alpha * AII_loss + beta * FCEAII_loss
+    total_loss = (
+        (1 - alpha - beta) * supervised_loss
+        + alpha * AII_loss
+        + beta * FCEAII_loss
+    )
     return total_loss
 
 
@@ -356,6 +391,7 @@ def train(model,
           old_zbtx_file=None,
           alpha=0.33,
           beta=0.33,
+          recall_weight=0.3,
           device='cpu',
           callback=None,
           A_II_labels=None,
@@ -404,6 +440,7 @@ def train(model,
                 old_zbtx_file,
                 alpha=alpha,
                 beta=beta,
+                recall_weight=recall_weight,
                 A_II_labels=A_II_labels,
                 A_I=A_I,
                 A_II=A_II,
@@ -423,6 +460,9 @@ def train(model,
             _, predicted = torch.max(outputs, 1)
             correct = (predicted == y_all).sum().item()
             train_acc = correct / y_all.size(0)
+            train_recall = macro_recall_score(
+                predicted, y_all, outputs.shape[1]
+            )
             train_accs.append(train_acc)
 
             # 计算模型在全部数据上执行AII、FCEAII的一致率
@@ -451,7 +491,7 @@ def train(model,
 
         # if (epoch + 1) % 10 == 0:
         print(
-            f'Epoch [{epoch + 1}/{num_epochs}]\tLoss: {loss:.4f}\tacc: {train_acc:.4f}\tAII: {AII_test_acc_weight:.4f},\tFCEAII: {FCE_AII_test_acc_weight:.4f}'
+            f'Epoch [{epoch + 1}/{num_epochs}]\tLoss: {loss:.4f}\tacc: {train_acc:.4f}\tRecall: {train_recall:.4f}\tAII: {AII_test_acc_weight:.4f},\tFCEAII: {FCE_AII_test_acc_weight:.4f}'
         )
         # 绘制损失曲线
         loss_img = draw_utils.draw_plot(losses,
@@ -481,6 +521,7 @@ def train(model,
                 for label, weight in zip(A_II_labels, normalized_weights)
             }
             continue_training = callback(epoch + 1, loss, train_acc, train_acc,
+                                         train_recall,
                                          AII_test_acc_weight,
                                          FCE_AII_test_acc_weight, weights_dict,
                                          loss_img, acc_img, acc_aii_fce_img, weight_img, color_mapping)
@@ -531,9 +572,15 @@ def self_optimization(full_df_std,
                       A_II,
                       A_II_labels,
                       device='cuda',
+                      recall_weight=0.3,
                       callback=None,
                       work_dir=None):
     """ 自优化算法主函数 """
+
+    if not 0 <= recall_weight <= 1:
+        raise ValueError('召回率损失权重 recall_weight 必须在 0 和 1 之间')
+    if alpha < 0 or beta < 0 or alpha + beta > 1:
+        raise ValueError('alpha、beta 必须非负，并且 alpha + beta 不能超过 1')
 
     # 超参数
     model = Net()
@@ -567,6 +614,7 @@ def self_optimization(full_df_std,
         old_zbtx_file=old_zbtx_file,
         alpha=alpha,
         beta=beta,
+        recall_weight=recall_weight,
         device=device,
         callback=callback,
         A_II_labels=A_II_labels,
@@ -668,6 +716,10 @@ if __name__ == '__main__':
                         type=float,
                         default=0.,
                         help='FCE自优化权重，默认值为0')
+    parser.add_argument('--recall_weight',
+                        type=float,
+                        default=0.3,
+                        help='Soft Macro-Recall损失权重，范围[0, 1]，默认值为0.3')
     parser.add_argument('--device', type=str, default='cpu', help='训练设备')
     args = parser.parse_args()
 
@@ -722,6 +774,7 @@ if __name__ == '__main__':
         A_II,
         A_II_labels,
         args.device,
+        recall_weight=args.recall_weight,
         work_dir=args.new_zbtx_path,
     )
 
