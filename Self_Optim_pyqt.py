@@ -37,7 +37,8 @@ import threading
 from params import RRDA_AI_indicater_1
 from selfOptimization import (  # 替换为您的实际模块名
     self_optimization,
-    encode
+    encode,
+    read_csv_auto_encoding,
 )
 from util import get_AI_AII, sort_indicators_by_number, extract_indicator_number
 from params import RESULT_VECTOR_MAPPING
@@ -90,11 +91,11 @@ class AlgorithmRunner(QRunnable):
             dataset_file = self.params['dataset']
 
             # 读取数据
-            real_result = pd.read_csv(dataset_file)['实际认定结果']
+            real_result = read_csv_auto_encoding(dataset_file)['实际认定结果']
             real_labels = real_result.map(RESULT_VECTOR_MAPPING).to_numpy()
 
             # 获取二级指标列表
-            df_zbtx = pd.read_csv(old_zbtx_file)
+            df_zbtx = read_csv_auto_encoding(old_zbtx_file)
             # A_I, A_II = get_AI_AII(df_zbtx, RRDA_AI_indicater_1)  # 假设RRDA_AI_indicater_1已定义
             A_I, A_II = get_AI_AII(df_zbtx)
             A_II_labels = []
@@ -106,7 +107,11 @@ class AlgorithmRunner(QRunnable):
             A_II_labels = sort_indicators_by_number(A_II_labels)
 
             # 编码数据
-            encode_data = encode(dataset_file, df_zbtx=pd.read_csv(old_zbtx_file), with_RRDA=False)
+            encode_data = encode(
+                dataset_file,
+                df_zbtx=read_csv_auto_encoding(old_zbtx_file),
+                with_RRDA=False,
+            )
             for i in range(len(encode_data)):
                 encode_data[i] = {
                     k: v
@@ -117,7 +122,7 @@ class AlgorithmRunner(QRunnable):
 
             # 执行RRDA算法
             # full_df_std = RRDA.run_RRDA(dataset_file)
-            full_df_std = pd.read_csv(dataset_file)
+            full_df_std = read_csv_auto_encoding(dataset_file)
 
             # 准备real_data
             real_data = [df, real_labels]

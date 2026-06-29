@@ -68,6 +68,7 @@ class MainWindow(QMainWindow):
         self.tmp_dir = './tmp'
         self.selected_algorithm = "AII"
         self.df_std = None
+        self.confusion_matrix_tab = None
         # self.canvas = MatplotlibCanvas(self)
         self.is_simple_view = True  # 添加视图状态标志
         self.current_page = 1  # 当前页码
@@ -855,6 +856,86 @@ class MainWindow(QMainWindow):
                 self.tmp_dir, self.selected_algorithm + "_")
             tab_widget.addTab(image_tab, "📈 认定结果总览")
 
+    def add_confusion_matrix_tab(self):
+        if self.df_std is None:
+            return
+
+        required_columns = {'实际认定结果', '算法认定结果'}
+        if not required_columns.issubset(self.df_std.columns):
+            return
+
+        comparison_df = self.df_std[
+            ['实际认定结果', '算法认定结果']
+        ].dropna()
+        if comparison_df.empty:
+            return
+
+        preferred_order = ['特别困难', '困难', '一般困难', '不困难']
+        observed_labels = set(comparison_df['实际认定结果'].astype(str))
+        observed_labels.update(comparison_df['算法认定结果'].astype(str))
+        labels = [label for label in preferred_order if label in observed_labels]
+        labels.extend(sorted(observed_labels - set(labels)))
+
+        matrix = pd.crosstab(
+            comparison_df['实际认定结果'].astype(str),
+            comparison_df['算法认定结果'].astype(str),
+        ).reindex(index=labels, columns=labels, fill_value=0).to_numpy()
+
+        if self.confusion_matrix_tab is not None:
+            old_index = self.tab_widget.indexOf(self.confusion_matrix_tab)
+            if old_index >= 0:
+                self.tab_widget.removeTab(old_index)
+            self.confusion_matrix_tab.deleteLater()
+
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        accuracy = (
+            comparison_df['实际认定结果'].astype(str)
+            == comparison_df['算法认定结果'].astype(str)
+        ).mean()
+
+        figure = Figure(figsize=(8, 6), dpi=100)
+        canvas = FigureCanvas(figure)
+        axes = figure.add_subplot(111)
+        image = axes.imshow(matrix, cmap='Blues')
+        font = fm.FontProperties(fname="C:/Windows/Fonts/msyh.ttc", size=11)
+        max_count = matrix.max() if matrix.size else 0
+
+        for row in range(len(labels)):
+            row_total = matrix[row].sum()
+            for column in range(len(labels)):
+                count = int(matrix[row, column])
+                ratio = count / row_total if row_total else 0
+                color = 'white' if max_count and count > max_count / 2 else '#1f2d3d'
+                axes.text(
+                    column,
+                    row,
+                    f"{count}\n{ratio:.1%}",
+                    ha='center',
+                    va='center',
+                    color=color,
+                    fontproperties=font,
+                )
+
+        axes.set_xticks(range(len(labels)))
+        axes.set_yticks(range(len(labels)))
+        axes.set_xticklabels(labels, fontproperties=font)
+        axes.set_yticklabels(labels, fontproperties=font)
+        axes.set_xlabel('算法认定结果', fontproperties=font)
+        axes.set_ylabel('实际认定结果', fontproperties=font)
+        axes.set_title(
+            f'{self.selected_algorithm} 认定结果混淆矩阵（人数 / 实际类别占比）\n'
+            f'总体准确率：{accuracy:.2%}    有效样本数：{len(comparison_df)}',
+            fontproperties=font,
+        )
+        figure.colorbar(image, ax=axes, fraction=0.046, pad=0.04)
+        figure.tight_layout()
+        layout.addWidget(canvas, 1)
+
+        self.confusion_matrix_tab = tab
+        self.tab_widget.addTab(tab, "混淆矩阵")
+        self.tab_widget.setCurrentWidget(tab)
+
     def run_algorithm(self):
         # 从输入框获取路径
         # self.dataset_file 和 self.zbtx_file 已经在选择文件时设置
@@ -938,6 +1019,8 @@ class MainWindow(QMainWindow):
         if self.radio_mode_comparison.isChecked():
             self.display_acc()
 
+        self.add_confusion_matrix_tab()
+
         QMessageBox.information(self, "成功", "AII算法完成")
         self.add_image_tab(self.tab_widget)
 
@@ -955,6 +1038,7 @@ class MainWindow(QMainWindow):
         self.df_full = self.df_std  # 保存完整数据
         self.display_table_data(self.table_input, self.df_std)  # 使用新方法显示
         self.display_acc()
+        self.add_confusion_matrix_tab()
         QMessageBox.information(self, "成功", "FCE-AII算法完成")
         self.add_image_tab(self.tab_widget)
 

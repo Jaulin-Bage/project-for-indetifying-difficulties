@@ -15,6 +15,30 @@ import argparse
 import util
 import os
 import draw_utils
+import chardet
+
+
+def read_csv_auto_encoding(file_path, **kwargs):
+    """自动识别CSV编码，并在识别失败时尝试常见中英文编码。"""
+    with open(file_path, 'rb') as file:
+        raw_data = file.read(1024 * 1024)
+
+    detected = chardet.detect(raw_data).get('encoding')
+    candidates = [detected, 'utf-8-sig', 'utf-8', 'gb18030']
+    tried = []
+    last_error = None
+    for encoding in candidates:
+        if not encoding or encoding.lower() in tried:
+            continue
+        tried.append(encoding.lower())
+        try:
+            return pd.read_csv(file_path, encoding=encoding, **kwargs)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+
+    raise UnicodeError(
+        f'无法识别CSV文件编码: {file_path}，已尝试: {", ".join(tried)}'
+    ) from last_error
 
 warnings.simplefilter("ignore", category=RuntimeWarning)
 
@@ -139,7 +163,7 @@ def encode(data, df_zbtx, with_RRDA=True):
 
     all_scores = []
     indicator_2 = df_zbtx['indicator_2'].unique().tolist()
-    df_data = pd.read_csv(data)
+    df_data = read_csv_auto_encoding(data)
     for index, row in df_data.iterrows():
         scs_dict = trans_score(row, df_zbtx)
         for indicator in indicator_2:
@@ -725,12 +749,12 @@ if __name__ == '__main__':
 
     dataset = args.dataset
 
-    real_result = pd.read_csv(dataset)['实际认定结果']
+    real_result = read_csv_auto_encoding(dataset)['实际认定结果']
 
     real_labels = real_result.map(RESULT_VECTOR_MAPPING).to_numpy()
 
     # 获取二级指标列表
-    df_zbtx = pd.read_csv(args.old_zbtx_file)
+    df_zbtx = read_csv_auto_encoding(args.old_zbtx_file)
     A_I, A_II = util.get_AI_AII(df_zbtx)
     A_II_labels = []
     for ai in A_II.keys():
@@ -738,7 +762,7 @@ if __name__ == '__main__':
             A_II_labels.append(aii)
 
     encode_data = encode(dataset,
-                         df_zbtx=pd.read_csv(args.old_zbtx_file),
+                         df_zbtx=read_csv_auto_encoding(args.old_zbtx_file),
                          with_RRDA=False)
     # 将encode_data中的每个字典按照 A_II_labels 的顺序进行排序
     for i in range(len(encode_data)):
@@ -754,7 +778,7 @@ if __name__ == '__main__':
 
     # 执行RRDA算法后的数据集
     # full_df_std = RRDA.run_RRDA(dataset)
-    full_df_std = pd.read_csv(dataset)
+    full_df_std = read_csv_auto_encoding(dataset)
 
     # 编码后的数据集
     real_data = [df, real_labels]
